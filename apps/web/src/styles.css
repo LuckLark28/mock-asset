@@ -1,0 +1,112 @@
+:root {
+  --paper: #e8e1d6;
+  --ink: #241c16;
+  --muted: #6f6458;
+  --panel: #f7f3ec;
+  --line: #d8cec0;
+  --up: #9d2c22;
+  --down: #1e6b45;
+  --accent: #7d3b24;
+  --warn: #8a5a12;
+  --soft: #efe7db;
+  color: var(--ink);
+  background: var(--paper);
+  font-family: "Avenir Next", "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; }
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+h1, h2, h3 { font-family: "Iowan Old Style", Palatino, "Songti SC", "Noto Serif SC", serif; font-weight: 600; margin: 0; }
+p { margin: 0; }
+
+.banner {
+  padding: 8px 28px;
+  background: #241c16;
+  color: #f3ecdf;
+  font-size: 13px;
+  letter-spacing: 0.01em;
+}
+.shell { display: grid; grid-template-columns: 220px 1fr; min-height: calc(100vh - 37px); }
+nav {
+  padding: 28px 20px;
+  border-right: 1px solid var(--line);
+}
+.mark { display: flex; gap: 10px; align-items: center; margin-bottom: 28px; }
+.seal {
+  width: 36px; height: 36px;
+  display: grid; place-items: center;
+  border: 1.5px solid var(--accent);
+  color: var(--accent);
+  font-family: "Songti SC", serif;
+}
+.mark strong { display: block; font-size: 16px; }
+.mark span { color: var(--muted); font-size: 12px; }
+nav a {
+  display: block;
+  padding: 8px 0;
+  color: var(--muted);
+  text-decoration: none;
+}
+nav a.active { color: var(--ink); }
+main { padding: 32px 40px 64px; max-width: 1080px; }
+.page-head { display: flex; justify-content: space-between; gap: 16px; align-items: flex-end; margin-bottom: 22px; }
+.page-head p, .hint { color: var(--muted); }
+.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 18px; }
+.stat, .card, .table-wrap {
+  background: var(--panel);
+  border: 1px solid var(--line);
+}
+.stat { padding: 14px 16px; }
+.stat b { display: block; font-size: 26px; font-variant-numeric: tabular-nums; font-family: "Iowan Old Style", Palatino, serif; }
+.stat span { color: var(--muted); font-size: 12px; }
+.up { color: var(--up); }
+.down { color: var(--down); }
+.card { padding: 18px; margin-bottom: 16px; }
+.card h2 { font-size: 22px; margin-bottom: 8px; }
+.grid-2 { display: grid; grid-template-columns: 1.4fr 0.8fr; gap: 16px; }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th { text-align: left; font-size: 12px; color: var(--muted); font-weight: 500; padding: 8px 6px; }
+td { padding: 9px 6px; border-top: 1px solid var(--line); vertical-align: top; }
+.bar { height: 8px; background: var(--soft); margin-top: 6px; }
+.bar i { display: block; height: 100%; background: var(--ink); }
+.bar.warn i { background: var(--up); }
+.breach { color: var(--up); }
+form .row, .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; }
+label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); min-width: 120px; }
+label.grow { flex: 1; }
+input, select, textarea {
+  background: white;
+  border: 1px solid var(--line);
+  padding: 8px 10px;
+  border-radius: 0;
+}
+textarea { min-height: 72px; width: 100%; }
+.actions { display: flex; gap: 8px; align-items: center; }
+button.primary, button.ghost, a.button {
+  border: 1px solid var(--ink);
+  background: var(--ink);
+  color: #f7f3ec;
+  padding: 8px 14px;
+  text-decoration: none;
+}
+button.ghost, a.button.ghost { background: transparent; color: var(--ink); }
+button:disabled { opacity: 0.5; cursor: wait; }
+.error { color: var(--up); margin: 8px 0; }
+.warn-list { color: var(--warn); padding-left: 18px; }
+.chart { height: 320px; }
+.tag { font-size: 12px; color: var(--muted); }
+.split { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.month { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
+.day { min-height: 92px; background: var(--soft); border: 1px solid var(--line); padding: 6px; font-size: 12px; }
+.day.off { opacity: 0.55; }
+.day p { margin-top: 4px; }
+@media (max-width: 900px) {
+  .shell { grid-template-columns: 1fr; }
+  nav { border-right: 0; border-bottom: 1px solid var(--line); }
+  .stats, .grid-2, .split { grid-template-columns: 1fr; }
+  main { padding: 20px; }
+}
