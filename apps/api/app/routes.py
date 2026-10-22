@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.db import DB_PATH, get_session
+from app.market import sync_all
 from app.domain import (
     DomainError,
     activate_plan,

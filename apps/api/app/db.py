@@ -5,7 +5,9 @@ from pathlib import Path
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
-ROOT = Path(__file__).resolve().parents[3]
+_here = Path(__file__).resolve()
+# 本机是仓库根目录；镜像里代码在 /srv/app，没有那么多层父目录。
+ROOT = _here.parents[3] if len(_here.parents) > 3 else _here.parents[1]
 DATA = ROOT / "data"
 DATA.mkdir(parents=True, exist_ok=True)
 DB_PATH = Path(os.environ.get("SANDBOX_DB", DATA / "sandbox.db"))
