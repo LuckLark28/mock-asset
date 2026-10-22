@@ -84,14 +84,19 @@ def sync_all(session: Session, start: date | None = None, end: date | None = Non
 
 
 def _fetch_bars(ak, instrument: Instrument, start: date, end: date):
-    start_s = start.strftime("%Y%m%d")
-    end_s = end.strftime("%Y%m%d")
+    """收盘价走新浪。东方财富在云服务器上会直接断开连接，而交易日历和分红已经能从新浪拿到。"""
+    symbol = sina_symbol(instrument)
     if instrument.asset_class == "index":
-        frame = ak.index_zh_a_hist(symbol=instrument.symbol, period="daily", start_date=start_s, end_date=end_s)
+        frame = ak.stock_zh_index_daily(symbol=symbol)
     elif instrument.symbol.startswith(("15", "16", "18", "50", "51", "52", "56", "58")):
-        frame = ak.fund_etf_hist_em(symbol=instrument.symbol, period="daily", start_date=start_s, end_date=end_s, adjust="")
+        frame = ak.fund_etf_hist_sina(symbol=symbol)
     else:
-        frame = ak.stock_zh_a_hist(symbol=instrument.symbol, period="daily", start_date=start_s, end_date=end_s, adjust="")
+        frame = ak.stock_zh_a_daily(
+            symbol=symbol,
+            start_date=start.strftime("%Y%m%d"),
+            end_date=end.strftime("%Y%m%d"),
+            adjust="",
+        )
     day_col = _column(frame, "日期", "date")
     close_col = _column(frame, "收盘", "close")
     if day_col is None or close_col is None:
@@ -101,7 +106,10 @@ def _fetch_bars(ak, instrument: Instrument, start: date, end: date):
         close = row[close_col]
         if close is None or str(close) in {"nan", "None", ""}:
             continue
-        rows.append((parse_day(row[day_col]), Decimal(str(close))))
+        day = parse_day(row[day_col])
+        if day < start or day > end:
+            continue
+        rows.append((day, Decimal(str(close))))
     return rows
 
 
