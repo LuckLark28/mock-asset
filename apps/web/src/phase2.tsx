@@ -8,6 +8,7 @@ import {
   RebalanceTask,
   TaskStats,
   api,
+  apiPath,
   pct,
 } from "./api";
 import { NavChart } from "./chart";
@@ -48,7 +49,7 @@ export function Review() {
           <label>开始<input type="date" value={start} onChange={(event) => setStart(event.target.value)} /></label>
           <label>结束<input type="date" value={end} onChange={(event) => setEnd(event.target.value)} /></label>
           <button className="primary">计算</button>
-          <a className="button ghost" href={`/api/attribution.csv?start=${start}&end=${end}`}>导出</a>
+          <a className="button ghost" href={apiPath(`/api/attribution.csv?start=${start}&end=${end}`)}>导出</a>
         </form>
         {report && (
           <>
@@ -274,7 +275,7 @@ export function PracticeControls({ boot }: { boot: Bootstrap }) {
         <h2>备份与恢复</h2>
         <p className="hint">恢复会覆盖当前练习账本。覆盖前会先留下一份当日副本。</p>
         <div className="actions" style={{ marginTop: 12 }}>
-          <a className="button ghost" href="/api/backup">下载备份</a>
+          <a className="button ghost" href={apiPath("/api/backup")}>下载备份</a>
         </div>
         <form
           className="row"

@@ -1,8 +1,13 @@
 export class ApiError extends Error {}
 
+export function apiPath(path: string) {
+  const prefix = import.meta.env.BASE_URL.replace(/\/$/, "");
+  return `${prefix}${path}`;
+}
+
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const token = sessionStorage.getItem("sandbox-token");
-  const response = await fetch(url, {
+  const response = await fetch(apiPath(url), {
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -75,7 +80,7 @@ export const api = {
     body.append("confirm", confirm);
     body.append("file", file);
     const token = sessionStorage.getItem("sandbox-token");
-    const response = await fetch("/api/backup/restore", { method: "POST", body, headers: token ? { "X-Sandbox-Token": token } : {} });
+    const response = await fetch(apiPath("/api/backup/restore"), { method: "POST", body, headers: token ? { "X-Sandbox-Token": token } : {} });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
       throw new ApiError(typeof data.detail === "string" ? data.detail : "恢复失败");

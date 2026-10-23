@@ -9,6 +9,7 @@ import {
   Plan,
   Preview,
   api,
+  apiPath,
   money,
   pct,
   signed,
@@ -553,10 +554,10 @@ function Settings({ boot }: { boot: Bootstrap }) {
       <section className="card">
         <h2>导出</h2>
         <div className="actions">
-          <a className="button ghost" href="/api/export/trades.csv">交易流水</a>
-          <a className="button ghost" href="/api/export/snapshots.csv">快照</a>
-          <a className="button ghost" href="/api/export/logs.csv">决策日志</a>
-          <a className="button ghost" href="/api/export/plans.json">方案与权重版本</a>
+          <a className="button ghost" href={apiPath("/api/export/trades.csv")}>交易流水</a>
+          <a className="button ghost" href={apiPath("/api/export/snapshots.csv")}>快照</a>
+          <a className="button ghost" href={apiPath("/api/export/logs.csv")}>决策日志</a>
+          <a className="button ghost" href={apiPath("/api/export/plans.json")}>方案与权重版本</a>
         </div>
       </section>
       <section className="card">
