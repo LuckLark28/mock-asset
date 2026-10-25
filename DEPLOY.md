@@ -106,10 +106,19 @@ curl http://127.0.0.1:8000/api/health
 
 先构建页面，再让 Nginx 监听 80。页面里的接口地址都是相对路径 `/api`，所以浏览器只连 Nginx，由它转到本机 8000。同步行情可能要一两分钟，读超时放到 300 秒。
 
+前端挂载路径由 `apps/web/.env` 里的 `VITE_BASE_PATH` 决定，构建时写入页面。IP 直连用 `/`，经域名挂在 `/mock-asset` 下时改为 `/mock-asset/`。改完后必须重新 `npm run build`。可参考同目录的 `.env.example`。
+
 ```bash
 cd /opt/mock-asset/apps/web
+cp -n .env.example .env
+# IP 访问保持 VITE_BASE_PATH=/ ；域名 /mock-asset 访问则改为 /mock-asset/
 npm run build
 sudo yum install -y nginx
+```
+
+IP 直连时 Nginx 用根路径；`VITE_BASE_PATH=/mock-asset/` 时改用下面第二段带前缀的配置。
+
+```bash
 sudo tee /etc/nginx/conf.d/sandbox.conf >/dev/null <<'EOF'
 server {
     listen 80 default_server;
@@ -129,6 +138,33 @@ server {
     }
 }
 EOF
+```
+
+挂在 `/mock-asset` 时用这一段：
+
+```nginx
+server {
+    listen 80 default_server;
+    server_name _;
+    root /opt/mock-asset/apps/web/dist;
+    client_max_body_size 20m;
+
+    location = /mock-asset {
+        return 301 /mock-asset/;
+    }
+
+    location /mock-asset/api/ {
+        proxy_pass http://127.0.0.1:8000/api/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_read_timeout 300s;
+    }
+
+    location /mock-asset/ {
+        rewrite ^/mock-asset/(.*)$ /$1 break;
+        try_files $uri $uri/ /index.html;
+    }
+}
 ```
 
 `default_server` 让公网 IP 的访问进这个站点。如果 `nginx -t` 报重复的 default server，再把 `/etc/nginx/nginx.conf` 里原有的 `server { ... }` 整段注释掉。
@@ -189,6 +225,8 @@ sudo systemctl reload nginx
 ```
 
 已有数据库会在启动时补上新列。不要删掉 `data/sandbox.db`。
+
+出入金会记录上海时间，15:00 前的资金变动在收盘成交前重放，15:00 起的资金变动在成交后重放。旧账本没有时间的记录按入金在盘前、出金在盘后兼容。补齐历史行情后，若旧委托补成交会使后续已成交交易或出金失效，该委托会被拒绝并保留原因。
 
 ## 10. 访问密码
 

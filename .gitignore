@@ -5,4 +5,7 @@ __pycache__/
 data/*.db
 apps/web/node_modules/
 apps/web/dist/
+apps/web/.env
+apps/web/.env.local
+apps/web/.env.*.local
 .DS_Store

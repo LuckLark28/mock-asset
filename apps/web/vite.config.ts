@@ -1,16 +1,28 @@
-import { defineConfig } from "vite";
+import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
 
-export default defineConfig({
-  base: "/mock-asset/",
-  plugins: [react()],
-  server: {
-    port: 5173,
-    proxy: {
-      "/mock-asset/api": {
-        target: "http://127.0.0.1:8000",
-        rewrite: (path) => path.replace(/^\/mock-asset/, ""),
+function normalizeBase(value: string | undefined) {
+  const raw = (value || "/").trim() || "/";
+  return raw.endsWith("/") ? raw : `${raw}/`;
+}
+
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, process.cwd(), "");
+  const base = normalizeBase(env.VITE_BASE_PATH);
+  const prefix = base.replace(/\/$/, "");
+  const apiPrefix = `${prefix}/api`;
+
+  return {
+    base,
+    plugins: [react()],
+    server: {
+      port: 5173,
+      proxy: {
+        [apiPrefix]: {
+          target: "http://127.0.0.1:8000",
+          rewrite: (path) => (prefix ? path.replace(prefix, "") : path),
+        },
       },
     },
-  },
+  };
 });
