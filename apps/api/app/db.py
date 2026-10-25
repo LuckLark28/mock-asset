@@ -54,3 +54,6 @@ def migrate() -> None:
             conn.execute(text("ALTER TABLE corporate_actions ADD COLUMN split_ratio VARCHAR DEFAULT '1'"))
         if "checklist_json" not in trade_cols:
             conn.execute(text("ALTER TABLE trades ADD COLUMN checklist_json TEXT DEFAULT ''"))
+        flow_cols = {column["name"] for column in inspector.get_columns("cash_flows")}
+        if "occurred_at" not in flow_cols:
+            conn.execute(text("ALTER TABLE cash_flows ADD COLUMN occurred_at DATETIME"))

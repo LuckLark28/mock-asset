@@ -15,7 +15,10 @@ from app.domain import (
     SH,
     ZERO,
     DomainError,
+    Pos,
+    State,
     active_plan,
+    apply_corporate_action,
     bar_on,
     d,
     estimate_view,
@@ -31,6 +34,7 @@ from app.domain import (
 from app.models import (
     BacktestRun,
     ClassBenchmark,
+    CorporateAction,
     DailySnapshot,
     FxRate,
     Instrument,
@@ -422,48 +426,85 @@ def run_backtest(
     days = [day for day in trading_days_between(session, start, end) if all(bar_on(session, instrument.id, day) for instrument, _ in normalized)]
     if len(days) < 2:
         raise DomainError("这个区间里同时有行情的交易日不足两天。请先同步行情，或缩短到已有收盘价的区间")
+    # 固定顺序解决资金紧张时的分配歧义；同一输入集合不受排列影响。
+    if len({instrument.id for instrument, _ in normalized}) != len(normalized):
+        raise DomainError("同一标的不能重复")
+    normalized.sort(key=lambda item: item[0].id)
+    days = trading_days_between(session, days[0], days[-1])
+    instruments = {instrument.id: instrument for instrument, _ in normalized}
+    actions = session.scalars(
+        select(CorporateAction).where(
+            CorporateAction.instrument_id.in_(instruments),
+            CorporateAction.ex_date >= days[0],
+            CorporateAction.ex_date <= days[-1],
+        ).order_by(CorporateAction.ex_date, CorporateAction.id)
+    ).all()
+    actions_by_day: dict[date, list[CorporateAction]] = {}
+    for action in actions:
+        actions_by_day.setdefault(action.ex_date, []).append(action)
+    # 非交易日公司行动也进入事件流，避免在缺失行情日漏掉派息。
+    timeline = sorted(set(days) | set(actions_by_day))
     rate = fee_rate(session)
-    cash = Decimal("1000000")
-    holdings: dict[int, int] = {instrument.id: 0 for instrument, _ in normalized}
+    state = State(cash=Decimal("1000000"), positions={key: Pos() for key in instruments})
+    history: dict[date, dict[int, int]] = {}
     series = []
     month = None
 
     def price_on(instrument: Instrument, day: date) -> Decimal:
-        bar = bar_on(session, instrument.id, day)
-        fx = fx_on(session, instrument.currency, day)
-        return bar.close * fx
+        quote = latest_close(session, instrument.id, day)
+        if not quote or quote[1] <= 0:
+            raise DomainError(f"{instrument.name} 没有可用价格")
+        return quote[1] * fx_on(session, instrument.currency, day)
 
     def rebalance(day: date) -> None:
-        nonlocal cash
         prices = {instrument.id: price_on(instrument, day) for instrument, _ in normalized}
-        total = cash + sum(prices[instrument.id] * holdings[instrument.id] for instrument, _ in normalized)
+        total = state.cash + sum(prices[key] * pos.qty for key, pos in state.positions.items())
+        deltas = []
         for instrument, weight in normalized:
             price = prices[instrument.id]
             target_qty = int((total * weight / price) // instrument.lot_size) * instrument.lot_size
-            delta = target_qty - holdings[instrument.id]
-            if delta > 0:
-                affordable = int((cash / (price * (ONE + rate))) // instrument.lot_size) * instrument.lot_size
-                delta = min(delta, affordable)
-                if delta <= 0:
-                    continue
-                gross = money(price * delta)
-                fee = money(gross * rate)
-                cash -= gross + fee
-                holdings[instrument.id] += delta
-            elif delta < 0:
-                sell = min(-delta, holdings[instrument.id])
-                gross = money(price * sell)
-                fee = money(gross * rate)
-                cash += gross - fee
-                holdings[instrument.id] -= sell
+            deltas.append((instrument, target_qty - state.positions[instrument.id].qty))
+        for instrument, delta in deltas:
+            if delta < 0:
+                gross = money(prices[instrument.id] * -delta)
+                state.cash += gross - money(gross * rate)
+                state.positions[instrument.id].qty += delta
+        for instrument, delta in deltas:
+            if delta <= 0:
+                continue
+            price = prices[instrument.id]
+            affordable = int((state.cash / (price * (ONE + rate))) // instrument.lot_size) * instrument.lot_size
+            quantity = min(delta, affordable)
+            # 按实际分项舍入后的费用检查现金，避免分币误差造成透支。
+            while quantity > 0:
+                gross = money(price * quantity)
+                cost = gross + money(gross * rate)
+                if cost <= state.cash:
+                    state.cash -= cost
+                    state.positions[instrument.id].qty += quantity
+                    break
+                quantity -= instrument.lot_size
 
-    for index, day in enumerate(days):
-        if index == 0 or (frequency == "monthly" and day.month != month):
-            rebalance(day)
-        month = day.month
-        prices = {instrument.id: price_on(instrument, day) for instrument, _ in normalized}
-        total = cash + sum(prices[instrument.id] * holdings[instrument.id] for instrument, _ in normalized)
-        series.append({"date": day, "nav": total / Decimal("1000000")})
+    for day in timeline:
+        for action in actions_by_day.get(day, []):
+            if action.record_date is None:
+                held = state.positions[action.instrument_id].qty
+            else:
+                record = max((key for key in history if key <= action.record_date), default=None)
+                held = history[record].get(action.instrument_id, 0) if record else 0
+            instrument = instruments[action.instrument_id]
+            apply_corporate_action(state, action, held, fx_on(session, instrument.currency, day))
+        if day in days:
+            period = (day.year, day.month)
+            if (not series or (frequency == "monthly" and period != month)) and all(
+                bar_on(session, instrument.id, day) for instrument, _ in normalized
+            ):
+                rebalance(day)
+                month = period
+            prices = {instrument.id: price_on(instrument, day) for instrument, _ in normalized}
+            total = state.cash + sum(prices[key] * pos.qty for key, pos in state.positions.items())
+            series.append({"date": day, "nav": total / Decimal("1000000")})
+        history[day] = {key: pos.qty for key, pos in state.positions.items()}
     navs = [item["nav"] for item in series]
     returns = [navs[index] / navs[index - 1] - ONE for index in range(1, len(navs))]
     metrics = risk_metrics(navs, returns, risk_free_rate(session))
@@ -475,7 +516,7 @@ def run_backtest(
         "frequency": frequency,
         "metrics": metrics,
         "series": [{"date": item["date"], "nav": _q(item["nav"])} for item in series],
-        "disclaimer": "历史表现不代表未来。这笔回测没有写入主账户的成交和快照。",
+        "disclaimer": "历史表现不代表未来。使用未复权收盘价，计入现金分红和拆分；分红保留现金，不自动再投资。缺失价格沿用前值，行情齐全时才再平衡。这笔回测没有写入主账户的成交和快照。",
     }
     session.add(
         BacktestRun(

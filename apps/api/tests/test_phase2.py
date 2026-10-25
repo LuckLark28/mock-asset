@@ -305,3 +305,46 @@ def test_repaired_price_creates_a_new_snapshot_version(session):
     assert first.id != second.id
     assert current_run(session).id == second.id
     assert session.get(SnapshotRun, first.id).is_current is False
+
+
+@pytest.mark.parametrize('kind', ['dividend', 'split', 'combined', 'missing_bar'])
+def test_backtest_corporate_actions_preserve_total_value(session, kind):
+    equity = add_instrument(session, '510300', 'equity')
+    split = Decimal('2') if kind in {'split', 'combined'} else Decimal('1')
+    dividend = Decimal('1') if kind in {'dividend', 'combined', 'missing_bar'} else Decimal('0')
+    closes = {MON: Decimal('10'), TUE: (Decimal('10') - dividend) / split, WED: (Decimal('10') - dividend) / split}
+    for day, close in closes.items():
+        if kind != 'missing_bar' or day != TUE:
+            session.add(MarketBar(instrument_id=equity.id, trade_date=day, close=close, source='test'))
+    session.add(CorporateAction(instrument_id=equity.id, ex_date=TUE, record_date=MON, cash_per_share=dividend, split_ratio=split, source='test'))
+    session.flush()
+    result = run_backtest(session, '公司行动', MON, WED, [{'instrument_id': equity.id, 'target_weight': '1'}], 'none', at(WED, 18))
+    assert len(result['series']) == 3
+    assert result['series'][-1]['nav'] == Decimal('1')
+    assert result['metrics']['cumulative_return'] == Decimal('0')
+    assert session.scalar(select(func.count(Trade.id))) == 0
+    assert session.scalar(select(func.count(DailySnapshot.id))) == 0
+
+
+@pytest.mark.parametrize('fee', ['0', '0.001'])
+def test_monthly_backtest_is_independent_of_weight_order(session, fee):
+    equity = add_instrument(session, '510300', 'equity')
+    bond = add_instrument(session, '511010', 'bond')
+    session.add(Setting(key='fee_rate', value=fee))
+    start = date(2026, 1, 30)
+    end = date(2026, 2, 27)
+    day = start
+    while day <= end:
+        if day.weekday() < 5:
+            prices = ('10', '10') if day == start else ('9', '11') if day == date(2026, 2, 2) else ('10', '11')
+            for instrument, close in zip((equity, bond), prices):
+                session.add(MarketBar(instrument_id=instrument.id, trade_date=day, close=Decimal(close), source='test'))
+        day += timedelta(days=1)
+    session.flush()
+    weights = [{'instrument_id': item.id, 'target_weight': '.5'} for item in (equity, bond)]
+    left = run_backtest(session, '顺序一', start, end, weights, 'monthly', at(end, 18))
+    right = run_backtest(session, '顺序二', start, end, list(reversed(weights)), 'monthly', at(end, 18))
+    assert left['series'] == right['series']
+    assert left['metrics'] == right['metrics']
+    if fee == '0':
+        assert left['series'][-1]['nav'] == Decimal('1.0555')

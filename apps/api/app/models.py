@@ -153,6 +153,7 @@ class CashFlow(Base):
     direction: Mapped[str] = mapped_column(String(8))
     amount: Mapped[Decimal] = mapped_column(Dec)
     occurred_on: Mapped[date] = mapped_column(Date)
+    occurred_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     note: Mapped[str] = mapped_column(String(200), default="")
 
 

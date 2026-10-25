@@ -112,7 +112,7 @@ export function Sandbox({ boot }: { boot: Bootstrap }) {
       <div className="page-head">
         <div>
           <h1>沙盘</h1>
-          <p>草稿回测只读历史收盘价。它不会写入主账户的成交和快照。</p>
+          <p>草稿回测计入现金分红和拆分，分红保留为现金。每月再平衡先卖后买，结果不会写入主账户的成交和快照。</p>
         </div>
       </div>
       <section className="card">

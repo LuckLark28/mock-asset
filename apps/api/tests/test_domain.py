@@ -242,3 +242,133 @@ def test_activate_switches_from_today(session):
     activate_plan(session, plan.id, moment)
     view = estimate_view(session, moment)
     assert any(row["symbol"] == "511010" and row["target_weight"] == Decimal("1") for row in view["weights"])
+
+
+def test_withdrawal_after_sale_survives_reload_and_snapshot(session):
+    instruments = book(session)
+    equity = instruments['510300'].id
+    for day in (MON, TUE):
+        bar(session, equity, day, '4')
+    submit_order(session, equity, 'buy', at(MON, 10), {'reason': '建仓'}, quantity=10000)
+    fill_pending(session, MON, at(MON, 18))
+    submit_order(session, equity, 'sell', at(TUE, 10), {'reason': '卖出'}, quantity=10000)
+    fill_pending(session, TUE, at(TUE, 18))
+    flow = add_cashflow(session, 'out', Decimal('90000'), at(TUE, 19), '卖出后出金')
+    session.commit()
+    session.expire_all()
+    assert project(session, flow.account_id, TUE).cash == Decimal('10000')
+    assert create_snapshot_run(session, TUE, at(TUE, 20)).status == 'succeeded'
+
+
+def test_legacy_withdrawal_is_replayed_after_close(session):
+    from app.models import CashFlow
+    instruments = book(session)
+    equity = instruments['510300'].id
+    for day in (MON, TUE):
+        bar(session, equity, day, '4')
+    submit_order(session, equity, 'buy', at(MON, 10), {'reason': '买'}, quantity=10000)
+    fill_pending(session, MON, at(MON, 18))
+    submit_order(session, equity, 'sell', at(TUE, 10), {'reason': '卖'}, quantity=10000)
+    fill_pending(session, TUE, at(TUE, 18))
+    session.add(CashFlow(account_id=1, direction='out', amount=Decimal('90000'), occurred_on=TUE, note='旧记录'))
+    session.flush()
+    assert project(session, 1, TUE).cash == Decimal('10000')
+
+
+def test_post_close_deposit_cannot_fund_that_days_order(session):
+    instruments = book(session)
+    equity = instruments['510300'].id
+    trade = submit_order(session, equity, 'buy', at(MON, 10), {'reason': '买'}, amount=Decimal('150000'))
+    add_cashflow(session, 'in', Decimal('100000'), at(MON, 19), '盘后入金')
+    bar(session, equity, MON, '10')
+    fill_pending(session, MON, at(MON, 20))
+    assert trade.status == 'rejected'
+    assert project(session, 1, MON).cash == Decimal('200000')
+
+
+@pytest.mark.parametrize('later_event', ['buy', 'withdrawal'])
+def test_late_fill_cannot_break_confirmed_ledger(session, later_event):
+    instruments = book(session)
+    equity, bond = instruments['510300'].id, instruments['511010'].id
+    old = submit_order(session, equity, 'buy', at(MON, 10), {'reason': '缺行情'}, amount=Decimal('100000'))
+    if later_event == 'buy':
+        bar(session, bond, TUE, '10')
+        later = submit_order(session, bond, 'buy', at(TUE, 10), {'reason': '已成交'}, quantity=10000)
+        fill_pending(session, TUE, at(TUE, 18))
+        assert later.status == 'filled'
+    else:
+        add_cashflow(session, 'out', Decimal('90000'), at(TUE, 10), '已出金')
+    bar(session, equity, MON, '10')
+    fill_pending(session, TUE, at(TUE, 19))
+    assert old.status == 'rejected'
+    assert '后续账本' in old.reject_reason
+    assert old.quantity is old.price is old.amount is old.filled_at is None
+    assert project(session, 1, TUE).cash == Decimal('0' if later_event == 'buy' else '10000')
+    assert create_snapshot_run(session, TUE, at(TUE, 20)).status == 'succeeded'
+
+
+def test_late_fill_succeeds_when_later_ledger_remains_valid(session):
+    instruments = book(session)
+    equity = instruments['510300'].id
+    trade = submit_order(session, equity, 'buy', at(MON, 10), {'reason': '缺行情'}, amount=Decimal('40000'))
+    add_cashflow(session, 'out', Decimal('10000'), at(TUE, 10), '出金')
+    bar(session, equity, MON, '10')
+    fill_pending(session, TUE, at(TUE, 19))
+    assert trade.status == 'filled'
+    assert project(session, 1, TUE).cash == Decimal('50000')
+
+
+def test_migration_adds_cashflow_time_without_losing_old_rows(monkeypatch):
+    from sqlalchemy import inspect, text
+    import app.db as db_module
+    legacy_engine = create_engine('sqlite://')
+    Base.metadata.create_all(legacy_engine)
+    with legacy_engine.begin() as connection:
+        connection.execute(text('ALTER TABLE cash_flows DROP COLUMN occurred_at'))
+        connection.execute(text("INSERT INTO cash_flows (account_id,direction,amount,occurred_on,note) VALUES (1,'in','100','2026-10-12','legacy')"))
+    monkeypatch.setattr(db_module, 'engine', legacy_engine)
+    db_module.migrate()
+    db_module.migrate()
+    assert 'occurred_at' in {column['name'] for column in inspect(legacy_engine).get_columns('cash_flows')}
+    with legacy_engine.connect() as connection:
+        assert connection.execute(text('SELECT amount, occurred_at FROM cash_flows')).one() == ('100', None)
+
+
+def test_rejected_cashflow_leaves_no_persisted_event(session):
+    from app.models import CashFlow
+    instruments = book(session)
+    equity = instruments['510300'].id
+    for day in (MON, TUE):
+        bar(session, equity, day, '4')
+    submit_order(session, equity, 'buy', at(MON, 10), {'reason': '买'}, quantity=10000)
+    fill_pending(session, MON, at(MON, 18))
+    submit_order(session, equity, 'sell', at(TUE, 10), {'reason': '卖'}, quantity=10000)
+    fill_pending(session, TUE, at(TUE, 18))
+    # 余额虽含当天卖出收入，但不能把盘前出金插入到卖出之前。
+    count = session.query(CashFlow).count()
+    with pytest.raises(DomainError, match='现金不足'):
+        add_cashflow(session, 'out', Decimal('90000'), at(TUE, 9), '无效的盘前出金')
+    session.commit()
+    assert session.query(CashFlow).count() == count
+    assert project(session, 1, TUE).cash == Decimal('100000')
+
+
+def test_fill_includes_earlier_dated_trade_with_larger_id(session):
+    from app.models import Trade
+    instruments = book(session)
+    equity = instruments['510300'].id
+    for day in (MON, TUE):
+        bar(session, equity, day, '10')
+    sell = submit_order(session, equity, 'sell', at(TUE, 10), {'reason': '卖出'}, amount=Decimal('10000'))
+    # 例如补生成的分红再投资：记录 ID 较大，实际交易日期却更早。
+    historical_buy = Trade(account_id=1, plan_id=1, instrument_id=equity, side='buy',
+        quantity_requested=1000, quantity=1000, price=Decimal('10'), amount=Decimal('10000'),
+        fee=Decimal('0'), status='filled', trade_date=MON, submitted_at=at(TUE, 17),
+        filled_at=at(TUE, 17), source='dividend_reinvest')
+    session.add(historical_buy)
+    session.flush()
+    assert historical_buy.id > sell.id
+    fill_pending(session, TUE, at(TUE, 18))
+    assert sell.status == 'filled'
+    assert project(session, 1, TUE).cash == Decimal('100000')
+    assert project(session, 1, TUE).positions[equity].qty == 0

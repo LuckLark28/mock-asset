@@ -7,7 +7,7 @@ from datetime import date, datetime, time, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models import (
@@ -214,8 +214,22 @@ def bar_on(session: Session, instrument_id: int, day: date) -> MarketBar | None:
     )
 
 
+def apply_corporate_action(state: State, action: CorporateAction, held: int, fx: Decimal) -> None:
+    """主账本和回测共同使用未复权价格下的派息、拆分规则。"""
+    if action.cash_per_share:
+        state.cash += money(d(held) * action.cash_per_share * fx)
+    ratio = action.split_ratio or ONE
+    if ratio != ONE:
+        pos = state.positions.setdefault(action.instrument_id, Pos())
+        if pos.qty:
+            pos.qty = int((d(pos.qty) * ratio).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+            if pos.unsettled_qty:
+                pos.unsettled_qty = int((d(pos.unsettled_qty) * ratio).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+            pos.avg_cost = (pos.avg_cost / ratio).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP) if pos.qty else ZERO
+
+
 def project(session: Session, account_id: int, through: date, before_trade_id: int | None = None) -> State:
-    """把出入金、分红和已成交交易重放到 through 日收盘。before_trade_id 排除该笔及之后的成交。"""
+    """重放至 through 日结束；before_trade_id 截止到该委托前的收盘成交序列。"""
     cashflows = session.scalars(
         select(CashFlow).where(CashFlow.account_id == account_id, CashFlow.occurred_on <= through).order_by(CashFlow.occurred_on, CashFlow.id)
     ).all()
@@ -225,7 +239,13 @@ def project(session: Session, account_id: int, through: date, before_trade_id: i
         Trade.trade_date <= through,
     )
     if before_trade_id is not None:
-        trade_stmt = trade_stmt.where(Trade.id < before_trade_id)
+        boundary = session.get(Trade, before_trade_id)
+        if boundary is None:
+            raise DomainError("委托不存在")
+        trade_stmt = trade_stmt.where(or_(
+            Trade.trade_date < boundary.trade_date,
+            (Trade.trade_date == boundary.trade_date) & (Trade.id < before_trade_id),
+        ))
     trades = session.scalars(trade_stmt.order_by(Trade.trade_date, Trade.id)).all()
     instrument_ids = {trade.instrument_id for trade in trades}
     dividends = []
@@ -250,35 +270,46 @@ def project(session: Session, account_id: int, through: date, before_trade_id: i
             if action.ex_date != day:
                 continue
             record = action.record_date
-            if record is None or record not in end_qty:
+            record_day = max((prior for prior in end_qty if record is not None and prior <= record), default=None)
+            if record is None:
                 qty = state.positions.get(action.instrument_id, Pos()).qty
             else:
-                qty = end_qty[record].get(action.instrument_id, 0)
+                qty = end_qty[record_day].get(action.instrument_id, 0) if record_day else 0
             instrument = session.get(Instrument, action.instrument_id)
             fx = fx_on(session, instrument.currency if instrument else "CNY", day)
-            if action.cash_per_share:
-                state.cash += money(d(qty) * action.cash_per_share * fx)
-            ratio = action.split_ratio or ONE
-            if ratio != ONE:
-                pos = state.positions.setdefault(action.instrument_id, Pos())
-                if pos.qty:
-                    pos.qty = int((d(pos.qty) * ratio).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
-                    if pos.unsettled_qty:
-                        pos.unsettled_qty = int((d(pos.unsettled_qty) * ratio).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
-                    pos.avg_cost = (pos.avg_cost / ratio).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP) if pos.qty else ZERO
-        for flow in cashflows:
-            if flow.occurred_on != day:
-                continue
+            apply_corporate_action(state, action, qty, fx)
+
+        def apply_flow(flow: CashFlow) -> None:
             if flow.direction == "in":
                 state.cash += flow.amount
             else:
                 if state.cash < flow.amount:
                     raise DomainError("现金不足，无法出金")
                 state.cash -= flow.amount
+
+        # 成交发生在 15:00。旧记录没有时间，兼容为入金在盘前、出金在盘后。
+        day_flows = sorted(
+            (flow for flow in cashflows if flow.occurred_on == day),
+            key=lambda flow: (flow.occurred_at.time() if flow.occurred_at else
+                              time.min if flow.direction == "in" else time.max, flow.id),
+        )
+
+        def before_close(flow: CashFlow) -> bool:
+            if flow.occurred_at is None:
+                return flow.direction == "in"
+            return flow.occurred_at.time() < time(15, 0)
+
+        for flow in day_flows:
+            if before_close(flow):
+                apply_flow(flow)
         for trade in trades:
             if trade.trade_date != day:
                 continue
             _apply_fill(state, trade)
+        if before_trade_id is None or day < through:
+            for flow in day_flows:
+                if not before_close(flow):
+                    apply_flow(flow)
         end_qty[day] = {instrument_id: pos.qty for instrument_id, pos in state.positions.items()}
     state.settle(through)
     return state
@@ -324,7 +355,7 @@ def create_account(session: Session, name: str, initial_cash: Decimal, plan_id: 
     account = Account(name=name.strip(), created_on=created, base_currency="CNY")
     session.add(account)
     session.flush()
-    session.add(CashFlow(account_id=account.id, direction="in", amount=money(initial_cash), occurred_on=created, note="初始资金"))
+    session.add(CashFlow(account_id=account.id, direction="in", amount=money(initial_cash), occurred_on=created, occurred_at=moment.astimezone(SH), note="初始资金"))
     session.add(PlanBinding(account_id=account.id, plan_id=plan.id, effective_on=created))
     for item in session.scalars(select(AllocationPlan)).all():
         item.is_primary = item.id == plan.id
@@ -346,9 +377,11 @@ def add_cashflow(session: Session, direction: str, amount: Decimal, moment: date
         state = project(session, account.id, date(9999, 12, 31))
         if state.cash < amount:
             raise DomainError("现金不足，无法出金")
-    flow = CashFlow(account_id=account.id, direction=direction, amount=amount, occurred_on=occurred, note=note.strip())
-    session.add(flow)
-    session.flush()
+    with session.begin_nested():
+        flow = CashFlow(account_id=account.id, direction=direction, amount=amount, occurred_on=occurred, occurred_at=moment.astimezone(SH), note=note.strip())
+        session.add(flow)
+        session.flush()
+        project(session, account.id, date(9999, 12, 31))
     return flow
 
 
@@ -504,6 +537,15 @@ def fill_pending(session: Session, as_of: date, moment: datetime) -> list[Trade]
             trade.amount = cost
             trade.fee = fee
             trade.filled_at = moment
+            session.flush()
+            try:
+                # 补成交不能使之后已确认的成交或出金失效。
+                project(session, trade.account_id, date(9999, 12, 31))
+            except DomainError as exc:
+                trade.status = "rejected"
+                trade.reject_reason = f"成交会破坏后续账本：{exc}"
+                trade.quantity = trade.price = trade.amount = trade.filled_at = None
+                trade.fee = ZERO
         touched.append(trade)
         session.flush()
     return touched
